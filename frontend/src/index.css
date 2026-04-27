@@ -1,0 +1,25 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* JSON Syntax Highlighting - 参考prototype_new_ux项目 */
+.jk {
+    color: #7DD3FC; /* json key */
+}
+
+.js {
+    color: #86EFAC; /* json string */
+}
+
+.jn {
+    color: #FCD34D; /* json number */
+}
+
+.jc {
+    color: #475569; /* comment */
+    font-style: italic;
+}
+
+.jv {
+    color: #F9A8D4; /* variable/dynamic */
+}
