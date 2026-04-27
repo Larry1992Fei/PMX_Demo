@@ -1,58 +1,57 @@
 #!/bin/bash
 
-# PayerMax Payment Demo - Aliyun CentOS 7 (NVM Version)
+# PayerMax Payment Demo - Aliyun CentOS 7 (Mirror Version)
 # URL: https://github.com/Larry1992Fei/PMX_Demo/master/deploy_aliyun_centos.sh
 
 set -e
 
-echo "🚀 Starting PayerMax Demo Deployment (CentOS 7 Compatible)..."
+echo "🚀 Starting PayerMax Demo Deployment (China Mirror Mode)..."
 
-# 1. Clean up old nodesource repos
+# 1. Clean up old node repositories
 echo "🧹 Cleaning up old node repositories..."
 sudo rm -f /etc/yum.repos.d/nodesource-*.repo
 sudo yum clean all
 
 # 2. Install Basics
 echo "📦 Installing Basic dependencies..."
-sudo yum install -y git curl --skip-broken
+sudo yum install -y git curl wget tar xz --skip-broken
 
-# 3. Install NVM & Node.js 16
-if [ ! -d "$HOME/.nvm" ]; then
-    echo "📦 Installing NVM (Node Version Manager)..."
-    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+# 3. Install Node.js (Direct Binary from Mirror - No GitHub needed)
+if ! command -v node &> /dev/null
+then
+    echo "📦 Downloading Node.js 16 binary... (using npmmirror for speed)"
+    cd /tmp
+    wget https://npmmirror.com/mirrors/node/v16.20.2/node-v16.20.2-linux-x64.tar.xz
+    tar -xvf node-v16.20.2-linux-x64.tar.xz
+    sudo rm -rf /usr/local/node
+    sudo mv node-v16.20.2-linux-x64 /usr/local/node
+    sudo ln -sf /usr/local/node/bin/node /usr/local/bin/node
+    sudo ln -sf /usr/local/node/bin/npm /usr/local/bin/npm
+    sudo ln -sf /usr/local/node/bin/npx /usr/local/bin/npx
 fi
 
-# Load NVM
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-
-echo "📦 Installing Node.js 16 via NVM..."
-nvm install 16
-nvm use 16
-
-# Ensure node & npm are available in subshells
-ln -sf $(which node) /usr/local/bin/node
-ln -sf $(which npm) /usr/local/bin/npm
+echo "✅ Node.js Version: $(node -v)"
 
 # 4. Install PM2
 echo "📦 Installing PM2..."
-npm install -g pm2
-ln -sf $(which pm2) /usr/local/bin/pm2
+sudo /usr/local/node/bin/npm install -g pm2
+sudo ln -sf /usr/local/node/bin/pm2 /usr/local/bin/pm2
 
 # 5. Clone / Update Repository
 APP_DIR="/var/www/payermax-payment-demo"
+# If GitHub is slow, users might need to use Gitee mirror, but we stick to GitHub for now.
 REPO_URL="https://github.com/Larry1992Fei/PMX_Demo.git"
 
 if [ -d "$APP_DIR" ]; then
     echo "🔄 Updating existing repository..."
     cd $APP_DIR
-    git pull origin master
+    git pull origin master || (echo "⚠️ Git pull failed, attempting force clone..." && cd .. && sudo rm -rf $APP_DIR && git clone $REPO_URL payermax-payment-demo)
 else
     echo "📂 Cloning repository..."
     sudo mkdir -p /var/www
     sudo chown $USER:$USER /var/www
     cd /var/www
-    git clone $REPO_URL payermax-payment-demo
+    git clone $REPO_URL payermax-payment-demo || (echo "❌ Git clone failed. Please check network to GitHub." && exit 1)
     cd payermax-payment-demo
 fi
 
