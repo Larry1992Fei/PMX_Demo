@@ -10,11 +10,11 @@ echo "🚀 Starting PayerMax Demo Deployment for CentOS..."
 # 1. Install Basics (Skip system update to avoid conflicts)
 sudo yum install -y git curl --skip-broken
 
-# 2. Install Node.js (v18)
+# 2. Install Node.js (v16 for CentOS 7 compatibility)
 if ! command -v node &> /dev/null
 then
-    echo "📦 Installing Node.js 18..."
-    curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
+    echo "📦 Installing Node.js 16 (Required for CentOS 7)..."
+    curl -fsSL https://rpm.nodesource.com/setup_16.x | sudo bash -
     sudo yum install -y nodejs
 fi
 
