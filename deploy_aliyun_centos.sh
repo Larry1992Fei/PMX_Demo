@@ -7,9 +7,8 @@ set -e
 
 echo "🚀 Starting PayerMax Demo Deployment for CentOS..."
 
-# 1. Update System & Install Basics
-sudo yum update -y
-sudo yum install -y git curl
+# 1. Install Basics (Skip system update to avoid conflicts)
+sudo yum install -y git curl --skip-broken
 
 # 2. Install Node.js (v18)
 if ! command -v node &> /dev/null
