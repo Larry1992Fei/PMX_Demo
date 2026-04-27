@@ -1,29 +1,45 @@
 #!/bin/bash
 
-# PayerMax Payment Demo - Aliyun Auto Deployment Script (CentOS / Alibaba Cloud Linux)
+# PayerMax Payment Demo - Aliyun CentOS 7 (NVM Version)
 # URL: https://github.com/Larry1992Fei/PMX_Demo/master/deploy_aliyun_centos.sh
 
 set -e
 
-echo "🚀 Starting PayerMax Demo Deployment for CentOS..."
+echo "🚀 Starting PayerMax Demo Deployment (CentOS 7 Compatible)..."
 
-# 1. Install Basics (Skip system update to avoid conflicts)
+# 1. Clean up old nodesource repos
+echo "🧹 Cleaning up old node repositories..."
+sudo rm -f /etc/yum.repos.d/nodesource-*.repo
+sudo yum clean all
+
+# 2. Install Basics
+echo "📦 Installing Basic dependencies..."
 sudo yum install -y git curl --skip-broken
 
-# 2. Install Node.js (v16 for CentOS 7 compatibility)
-if ! command -v node &> /dev/null
-then
-    echo "📦 Installing Node.js 16 (Required for CentOS 7)..."
-    curl -fsSL https://rpm.nodesource.com/setup_16.x | sudo bash -
-    sudo yum install -y nodejs
+# 3. Install NVM & Node.js 16
+if [ ! -d "$HOME/.nvm" ]; then
+    echo "📦 Installing NVM (Node Version Manager)..."
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
 fi
 
-# 3. Install PM2 & Nginx
-echo "📦 Installing PM2 and Nginx..."
-sudo npm install -g pm2
-sudo yum install -y nginx
+# Load NVM
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 
-# 4. Clone / Update Repository
+echo "📦 Installing Node.js 16 via NVM..."
+nvm install 16
+nvm use 16
+
+# Ensure node & npm are available in subshells
+ln -sf $(which node) /usr/local/bin/node
+ln -sf $(which npm) /usr/local/bin/npm
+
+# 4. Install PM2
+echo "📦 Installing PM2..."
+npm install -g pm2
+ln -sf $(which pm2) /usr/local/bin/pm2
+
+# 5. Clone / Update Repository
 APP_DIR="/var/www/payermax-payment-demo"
 REPO_URL="https://github.com/Larry1992Fei/PMX_Demo.git"
 
@@ -40,19 +56,22 @@ else
     cd payermax-payment-demo
 fi
 
-# 5. Backend Setup
+# 6. Backend Setup
 echo "🏗️ Setting up Backend..."
 npm install
 pm2 stop pmx-backend || true
 pm2 start server.js --name "pmx-backend"
 
-# 6. Frontend Setup
+# 7. Frontend Setup
 echo "🏗️ Building Frontend..."
 cd frontend
 npm install
 npm run build
 
-# 7. Nginx Configuration
+# 8. Nginx Setup
+echo "📦 Installing Nginx..."
+sudo yum install -y nginx
+
 echo "⚙️ Configuring Nginx..."
 sudo tee /etc/nginx/conf.d/payermax.conf <<EOF
 server {
@@ -77,8 +96,7 @@ server {
 }
 EOF
 
-# Ensure main nginx.conf includes conf.d (CentOS default usually does)
-# Start and Enable Nginx
+# Start Nginx
 sudo nginx -t
 sudo systemctl enable nginx
 sudo systemctl restart nginx
