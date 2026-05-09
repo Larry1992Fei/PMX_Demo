@@ -4,7 +4,7 @@
  */
 import React from 'react';
 import { useSubscription } from '@/contexts/SubscriptionContext';
-import { StepConfig } from './StepConfig';
+import { DramaProductPreview } from './DramaProductPreview';
 import { StepCreatePlan } from './StepCreatePlan';
 import { StepActivate } from './StepActivate';
 import { StepComponent } from './StepComponent';
@@ -24,16 +24,16 @@ import { StepComplete } from './StepComplete';
  * m-deduct / np-deduct → StepDeduct
  */
 const STEP_MAP: Record<string, React.FC> = {
-  'pm-1':          StepConfig,
+  'pm-1':          DramaProductPreview,
   'pm-2':          StepCreatePlan,
   'pm-activate':   StepActivate,
   'pm-component':  StepComponent,
   'pm-complete':   StepComplete,
-  'm-1':           StepConfig,
+  'm-1':           DramaProductPreview,
   'm-bind':        StepBind,
   'm-component':   StepComponent,
   'm-deduct':      StepDeduct,
-  'np-1':          StepConfig,
+  'np-1':          DramaProductPreview,
   'np-bind':       StepBind,
   'np-component':  StepComponent,
   'np-deduct':     StepDeduct,

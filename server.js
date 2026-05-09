@@ -83,11 +83,11 @@ const sendRequest = (url, data, headerSign) => {
         } catch (e) {
           logger.error('解析 PayerMax 响应失败，原始内容：' + responseData);
           // 如果解析失败，可能是 HTML 报错，将其封装为 JSON 返回
-          resolve({ 
-            code: 'PARSE_ERROR', 
-            msg: '解析响应失败', 
+          resolve({
+            code: 'PARSE_ERROR',
+            msg: '解析响应失败',
             raw: responseData.substring(0, 200),
-            httpStatus: res.statusCode 
+            httpStatus: res.statusCode
           });
         }
       });
@@ -119,113 +119,287 @@ app.post('/api/applySession', async (req, res) => {
       return res.status(400).json({ success: false, message: '金额必须为正数' });
     }
 
-    // 构建请求数据
+    // 1. 构建标准的单层请求对象 (无 sign 字段)
+    const currentRFC3339 = formatRFC3339(new Date());
+
     const requestData = {
       version: '1.4',
       keyVersion: '1',
-      requestTime: new Date().toISOString(),
+      requestTime: currentRFC3339,
       appId: config.appId,
       merchantNo: config.merchantNo,
       data: {
         country,
         currency,
         totalAmount: amount,
-        userId,
+        userId: userId || `USER_${Date.now()}`,
         componentList: componentList || ['CARD', 'APPLEPAY', 'GOOGLEPAY']
       }
     };
 
-    // RSA 加签：使用商户私钥对请求参数加签
-    const signature = sign(requestData);
-    requestData.sign = signature;
+    // 2. 强制序列化为字符串
+    const bodyString = JSON.stringify(requestData);
 
-    // 调用 PayerMax applyDropinSession 接口
-    logger.info('📤 applySession 请求：', JSON.stringify(requestData));
-    const payerMaxResponse = await sendRequest(config.payerMax.applySessionUrl, requestData);
-    logger.info('📥 applySession 响应：', JSON.stringify(payerMaxResponse));
+    // 3. 加签
+    const headerSign = signRawBody(bodyString);
 
-    if (payerMaxResponse.code === 'APPLY_SUCCESS') {
-      res.json({
-        success: true,
-        sessionKey: payerMaxResponse.data.sessionKey,
-        clientKey: payerMaxResponse.data.clientKey
-      });
-    } else {
-      logger.error('applySession 失败：', payerMaxResponse.msg);
-      res.status(500).json({ success: false, message: payerMaxResponse.msg || '会话获取失败' });
+    // 4. 发送请求
+    logger.info('🚀 [FORCE_UPDATE] applySession Body: ' + bodyString);
+    try {
+      const payerMaxResponse = await sendRequest(config.payerMax.applySessionUrl, bodyString, headerSign);
+      logger.info('📥 applySession 响应：', JSON.stringify(payerMaxResponse));
+
+      // 直接返回 PayerMax 原始报文
+      res.json(payerMaxResponse);
+    } catch (err) {
+      logger.error('❌ applySession 核心异常：', err);
+      res.status(500).json({ code: 'ERROR', msg: '内部服务错误' });
     }
-  } catch (err) {
-    logger.error('❌ applySession 异常：', err);
-    res.status(500).json({ success: false, message: '服务调用失败' });
+  } catch (outerErr) {
+    logger.error('❌ applySession 路由级别异常：', outerErr);
+    res.status(500).json({ success: false, message: '请求处理失败' });
   }
 });
 
 // ========================
-// 接口 2：orderAndPay（支付提交）
+// 接口 2：orderAndPay（支付大一统总线）
 // ========================
 app.post('/api/orderAndPay', async (req, res) => {
   try {
-    const { paymentToken, amount } = req.body;
+    const {
+      amount, currency, country, userId, subject, reference,
+      integrationMode, cashierMode, paymentMethod,
+      paymentToken, sessionKey
+    } = req.body;
 
-    if (!paymentToken) {
-      logger.warn('orderAndPay paymentToken 不能为空');
-      return res.status(400).json({ success: false, message: 'paymentToken 不能为空' });
-    }
+    const currentRFC3339 = formatRFC3339(new Date());
+    const outTradeNo = `ORDER_${Date.now()}`;
 
-    // 构建请求数据
-    const requestData = {
-      version: '1.4',
-      keyVersion: '1',
-      requestTime: new Date().toISOString(),
-      appId: config.appId,
-      merchantNo: config.merchantNo,
-      data: {
-        paymentToken,
-        totalAmount: amount || '0'
-      }
+    // 基础业务数据拼装
+    const dataPayload = {
+      outTradeNo: outTradeNo,
+      totalAmount: amount || '11.00',
+      currency: currency || "USD",
+      country: country || "ID",
+      subject: subject || "Demo Payment",
+      userId: userId || "USER_123456",
+      reference: reference || "CustomRef",
+      frontCallbackUrl: `http://localhost:5173`,
+      notifyUrl: `http://localhost:${config.port}/api/webhook`,
+      language: "en"
     };
 
-    // RSA 加签
-    const signature = sign(requestData);
-    requestData.sign = signature;
+    // 智能路由核心：根据前端透传的集成模式，自动分支
+    if (integrationMode === 'cashier') {
+      dataPayload.integrate = "Hosted_Checkout";
+      if (cashierMode === 'SPECIFIC' && paymentMethod) {
+        dataPayload.paymentDetail = {
+          paymentMethodType: paymentMethod.toUpperCase() === 'APM' ? 'WALLET' : paymentMethod.toUpperCase()
+        };
+      }
+    } else if (integrationMode === 'api') {
+      dataPayload.integrate = "Direct_Payment";
+      dataPayload.terminalType = "WEB";
+      dataPayload.reference = reference || "2476598332645";
+      
+      const resolvedMethod = paymentMethod || 'CARD';
+      if (!paymentMethod) {
+        logger.warn('⚠️ API 模式未传 paymentMethod，降级使用 CARD');
+      }
 
-    // 调用 PayerMax orderAndPay 接口
-    logger.info('💳 orderAndPay 请求：', JSON.stringify(requestData));
-    const payResult = await sendRequest(config.payerMax.orderAndPayUrl, requestData);
-    logger.info('✅ 支付结果：', JSON.stringify(payResult));
+      dataPayload.paymentDetail = {
+        paymentMethodType: resolvedMethod.toUpperCase()
+      };
 
-    // 保存订单
+      // 如果是 API 模式下的 CARD 支付，按照用户要求补齐参考字段
+      if (resolvedMethod.toUpperCase() === 'CARD') {
+        dataPayload.paymentDetail.cardInfo = {
+          cardIdentifierNo: "4444333322221111",
+          cardHolderFullName: "James Smith",
+          cardExpirationMonth: "03",
+          cardExpirationYear: "30",
+          cvv: "123"
+        };
+        dataPayload.paymentDetail.buyerInfo = {
+          firstName: "Deborah",
+          lastName: "Swinstead",
+          email: "your@gmail.com",
+          phoneNo: "0609 031 114",
+          address: "Test Address",
+          city: "Holden Hill",
+          region: "SA",
+          zipCode: "5088",
+          clientIp: "211.52.321.225",
+          userAgent: "Mozilla/5.0 (iPad; CPU OS 18_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/22E252"
+        };
+        dataPayload.goodsDetails = [
+          {
+            goodsId: "49373",
+            goodsName: "Women's Long Skirts",
+            quantity: "2",
+            price: "38",
+            goodsCategory: "skirt",
+            showUrl: "https://your.com/product/womens-skirts/"
+          }
+        ];
+        dataPayload.shippingInfo = {
+          firstName: "test",
+          lastName: "test",
+          email: "test@gmail.com",
+          phoneNo: "0609 031 114",
+          address1: "Test Address",
+          city: "Holden Hill",
+          region: "SA",
+          state: "SA",
+          country: country || "ID",
+          zipCode: "5088"
+        };
+        dataPayload.billingInfo = dataPayload.shippingInfo;
+        dataPayload.envInfo = {
+          deviceLanguage: "en-AU",
+          screenHeight: "1180",
+          screenWidth: "820"
+        };
+      } else if (resolvedMethod.toUpperCase() === 'APPLEPAY' || resolvedMethod.toUpperCase() === 'GOOGLEPAY') {
+        const isGoogle = resolvedMethod.toUpperCase() === 'GOOGLEPAY';
+        dataPayload.terminalType = "WAP";
+        dataPayload.expireTime = "1800";
+        dataPayload.subject = "this is subject";
+        dataPayload.currency = "AED";
+        dataPayload.country = "AE";
+        dataPayload.userId = "userId001";
+        dataPayload.reference = "020213827524152";
+        dataPayload.frontCallbackUrl = "https://xxx.com";
+        dataPayload.notifyUrl = "https://yyy.com";
+
+        dataPayload.paymentDetail.buyerInfo = {
+          firstName: "James",
+          lastName: "Smith",
+          phoneNo: "903124360628",
+          email: "james@google.com",
+          clientIp: "124.156.108.193",
+          userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36"
+        };
+
+        if (isGoogle) {
+          dataPayload.paymentDetail.googlePayDetails = {
+            authMethod: "CRYPTOGRAM_3DS",
+            cryptogram: "cryptogram",
+            cardHolderFullName: "cryptogram googlePayDetails cardHolderFullName",
+            cardNetwork: "VISA",
+            expirationMonth: "01",
+            expirationYear: "2029",
+            pan: "3604241234569621",
+            description: "cryptogram"
+          };
+        } else {
+          dataPayload.paymentDetail.applePayPaymentData = {
+            applicationExpirationDate: "2312",
+            applicationPrimaryAccountNumber: "4111111111111111",
+            currencyCode: "USD",
+            deviceManufacturerIdentifier: "A1B2C3D4",
+            paymentDataType: "3DSecure",
+            transactionAmount: "100.00",
+            paymentData: {
+              onlinePaymentCryptogram: "Aa0KZXFURkhF...",
+              eciIndicator: "07"
+            },
+            network: "VISA",
+            type: "credit",
+            displayName: "Visa 0492"
+          };
+        }
+
+        dataPayload.goodsDetails = [
+          {
+            goodsId: "D002",
+            goodsName: "Key buckle",
+            quantity: "2",
+            price: "0.5",
+            goodsCurrency: "AED",
+            showUrl: "http://ttt.com",
+            goodsCategory: "电脑"
+          }
+        ];
+        dataPayload.shippingInfo = {
+          firstName: "James",
+          lastName: "Smith",
+          phoneNo: "903124360628",
+          email: "james@google.com",
+          address1: isGoogle ? "GOLGELI SOKAK NO.34, 06700" : "address1",
+          city: "GAZIOSMANPASA/ANKAR",
+          country: "TR",
+          zipCode: "06700"
+        };
+        dataPayload.billingInfo = dataPayload.shippingInfo;
+        dataPayload.riskParams = {
+          registerName: "lily",
+          regTime: "2023-07-01 12:08:34",
+          liveCountry: "VN",
+          payerAccount: "987654XXX",
+          payerName: "lily",
+          taxId: "1234567890"
+        };
+      }
+    } else if (integrationMode === 'component') {
+      dataPayload.integrate = "Direct_Payment";
+      dataPayload.expireTime = "3600";
+      dataPayload.terminalType = "WEB";
+      if (paymentToken && sessionKey) {
+        dataPayload.paymentDetail = {
+          paymentToken: paymentToken,
+          sessionKey: sessionKey,
+          buyerInfo: {
+            clientIp: "176.16.34.144",
+            userAgent: "Chrome"
+          }
+        };
+      } else {
+        logger.warn('orderAndPay 组件模式缺少 Token 或 SessionKey');
+        return res.status(400).json({ success: false, msg: '前置组件模式必须提供 paymentToken 和 sessionKey' });
+      }
+    } else {
+      dataPayload.integrate = "Hosted_Checkout"; // 降级兜底
+    }
+
+    const requestData = {
+      version: '1.5',
+      keyVersion: '1',
+      requestTime: currentRFC3339,
+      appId: config.appId,
+      merchantNo: config.merchantNo,
+      data: dataPayload
+    };
+
+    // 序列化与严格加签
+    const bodyString = JSON.stringify(requestData);
+    const headerSign = signRawBody(bodyString);
+
+    logger.info(`🚀 [Order Bus] Mode: ${integrationMode} | Integrate: ${dataPayload.integrate}`);
+    logger.info('📦 Body: ' + bodyString);
+
+    const payResult = await sendRequest(config.payerMax.orderAndPayUrl, bodyString, headerSign);
+    logger.info('✅ 支付响应：', JSON.stringify(payResult));
+
+    // 保存订单用于对账和展示
     const orders = getOrders();
-    const orderNo = payResult.data?.orderNo || `ORDER_${Date.now()}`;
     orders.push({
-      orderNo,
-      paymentToken,
+      orderNo: payResult.data?.orderNo || outTradeNo,
+      paymentToken: paymentToken || '',
       amount: amount || 0,
       payStatus: payResult.code === 'PAY_SUCCESS' ? 'SUCCESS' : 'FAILED',
       createTime: new Date().toLocaleString(),
-      signature: signature,
+      signature: headerSign,
       payResult: payResult
     });
     saveOrders(orders);
 
-    if (payResult.code === 'PAY_SUCCESS') {
-      res.json({
-        success: true,
-        orderNo: payResult.data.orderNo,
-        payStatus: 'SUCCESS',
-        message: '支付成功'
-      });
-    } else {
-      res.json({
-        success: false,
-        orderNo: orderNo,
-        payStatus: 'FAILED',
-        message: payResult.msg || '支付失败'
-      });
-    }
+    // 直接返回 PayerMax 完整的 JSON，前端自己判断成功与否并取 redirectUrl
+    res.json(payResult);
+
   } catch (err) {
-    logger.error('❌ orderAndPay 异常：', err);
-    res.status(500).json({ success: false, message: '支付处理失败' });
+    logger.error('❌ orderAndPay 内部异常：', err);
+    res.status(500).json({ code: 'ERROR', msg: '本地代理处理失败' });
   }
 });
 
@@ -233,7 +407,7 @@ app.post('/api/orderAndPay', async (req, res) => {
 const formatRFC3339 = (date) => {
   const pad = (n) => (n < 10 ? '0' + n : n);
   const padMs = (n) => (n < 10 ? '00' + n : n < 100 ? '0' + n : n);
-  
+
   const year = date.getFullYear();
   const month = pad(date.getMonth() + 1);
   const day = pad(date.getDate());
@@ -241,7 +415,7 @@ const formatRFC3339 = (date) => {
   const minutes = pad(date.getMinutes());
   const seconds = pad(date.getSeconds());
   const ms = padMs(date.getMilliseconds());
-  
+
   const tzo = -date.getTimezoneOffset();
   const dif = tzo >= 0 ? '+' : '-';
   const tzHours = pad(Math.floor(Math.abs(tzo) / 60));
@@ -250,52 +424,7 @@ const formatRFC3339 = (date) => {
   return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${ms}${dif}${tzHours}:${tzMin}`;
 };
 
-// ========================
-// 接口 2.5：Standard orderAndPay Proxy (全量收银台代理)
-// ========================
-app.get('/api/standard/orderAndPay', (req, res) => res.status(405).json({ message: 'Only POST supported' }));
-app.post('/api/standard/orderAndPay', async (req, res) => {
-  try {
-    const data = req.body;
-    
-    // 1. 构建符合 RFC3339 的请求时间 (yyyy-MM-dd'T'HH:mm:ss.SSSXXX)
-    const requestTime = formatRFC3339(new Date());
 
-    // 2. 构建基础请求体 (不含 sign)
-    const requestData = {
-      version: '1.5',
-      keyVersion: '1',
-      requestTime: requestTime,
-      appId: config.appId,
-      merchantNo: config.merchantNo,
-      data: {
-        ...data,
-        integrate: 'Hosted_Checkout'
-      }
-    };
-
-    // 3. 序列化为原始紧凑 JSON 字符串（禁止格式化，加签基准）
-    const rawBodyStr = JSON.stringify(requestData);
-
-    // 4. 对原始字符串执行 RSA-SHA256 加签
-    const signature = signRawBody(rawBodyStr);
-
-    // 5. 调用网关：仅在 Header 中携带签名，Body 保持原始加签字符串
-    logger.info('🛰️ Standard Proxy (v1.5) Body: ' + rawBodyStr);
-    logger.info('🔑 Header sign: ' + signature);
-
-    const payerMaxResponse = await sendRequest(config.payerMax.orderAndPayUrl, rawBodyStr, signature);
-    logger.info('📥 PayerMax Response: ' + JSON.stringify(payerMaxResponse));
-
-    res.json(payerMaxResponse);
-  } catch (err) {
-    logger.error('❌ Standard Proxy 异常：', err);
-    res.status(500).json({ 
-      success: false, 
-      message: err.message || '代理请求失败'
-    });
-  }
-});
 
 // ========================
 // 接口 3：webhook（异步通知）
@@ -367,12 +496,12 @@ app.listen(port, () => {
   logger.info(`🌐 前端访问地址：http://localhost:${port}`);
   logger.info(`🔧 后端接口地址：http://localhost:${port}/api`);
   logger.info(`⚠️  注意：请确保 secret 目录已放入 RSA 密钥文件，否则加签验签会失败`);
-  
+
   // 获取局域网IP地址
   const os = require('os');
   const networkInterfaces = os.networkInterfaces();
   let lanAddress = '0.0.0.0';
-  
+
   // 遍历所有网络接口，找到非本地回环的IPv4地址
   for (const interfaceName in networkInterfaces) {
     const interfaces = networkInterfaces[interfaceName];
@@ -384,7 +513,7 @@ app.listen(port, () => {
     }
     if (lanAddress !== '0.0.0.0') break;
   }
-  
+
   logger.info(`📡 局域网访问地址：http://${lanAddress}:${port}`);
 });
 

@@ -35,13 +35,18 @@ const getPublicKey = () => {
 function sign(params) {
   const privateKey = getPrivateKey();
 
-  // 按PayerMax官方要求排序参数（必须与验签端排序规则一致，否则验签失败）
+  // 排序并拼接待加签字符串
+  // 注意：PayerMax 要求如果参数值是对象或数组，需先将其转换为紧凑的 JSON 字符串（无多余空格）
   const sorted = Object.keys(params)
+    .filter(k => k !== 'sign' && params[k] !== undefined && params[k] !== null)
     .sort()
-    .map(k => `${k}=${params[k]}`)
+    .map(k => {
+      const val = typeof params[k] === 'object' ? JSON.stringify(params[k]) : params[k];
+      return `${k}=${val}`;
+    })
     .join('&');
 
-  // 执行加签，返回base64格式签名
+  // 执行加签，算法为 SHA256withRSA
   return crypto
     .createSign('RSA-SHA256')
     .update(sorted, 'utf8')
@@ -58,12 +63,16 @@ function sign(params) {
 function verifySign(notifyData) {
   const publicKey = getPublicKey();
   // 分离签名和其他业务参数
-  const { signature, ...rest } = notifyData;
+  const { sign: signature, ...rest } = notifyData;
 
-  // 按PayerMax官方要求排序参数（与加签时排序规则一致）
+  // 排序并拼接待加签字符串
   const sorted = Object.keys(rest)
+    .filter(k => k !== 'sign' && rest[k] !== undefined && rest[k] !== null)
     .sort()
-    .map(k => `${k}=${rest[k]}`)
+    .map(k => {
+      const val = typeof rest[k] === 'object' ? JSON.stringify(rest[k]) : rest[k];
+      return `${k}=${val}`;
+    })
     .join('&');
 
   // 执行验签
